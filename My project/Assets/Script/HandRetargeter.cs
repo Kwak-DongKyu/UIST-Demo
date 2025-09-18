@@ -5,7 +5,7 @@
 using System.Collections.Generic;
 using UnityEngine;
 
-public class HandRetarget_RotationOnly_AutoCalib : MonoBehaviour
+public class HandRetargeter : MonoBehaviour
 {
     [Header("Wrist (기준 프레임)")]
     public Transform xrWrist;           // XRHand_Wrist

@@ -1,7 +1,7 @@
 using UnityEngine;
 using UnityEngine.Animations.Rigging;
 
-public class HandLatchIK_SimpleIdleIsInitial : MonoBehaviour
+public class HandLatchIK : MonoBehaviour
 {
     [Header("IK (Left / Right)")]
     public TwoBoneIKConstraint leftArmIK;
@@ -96,7 +96,7 @@ public class HandLatchIK_SimpleIdleIsInitial : MonoBehaviour
         // 왼손은 항상 아이들 포즈 유지(혹시 외부에서 값이 바뀌었을 경우 대비)
         if (!following)
             SnapLeftIdle();
-            SnapRightIdle();
+            //SnapRightIdle();
 
     }
 

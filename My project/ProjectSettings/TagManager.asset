@@ -5,6 +5,9 @@ TagManager:
   serializedVersion: 3
   tags:
   - PlayerHand
+  - GrabA
+  - GrabB
+  - GrabC
   layers:
   - Default
   - TransparentFX
