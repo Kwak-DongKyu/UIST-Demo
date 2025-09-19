@@ -39,27 +39,20 @@ public class HandshakeOrchestrator : MonoBehaviour
 
     void HandleStart(HandshakeAgent agent, AnimMode mode)
     {
-        // 1) 현재 주인이 없으면 새 주인으로
         if (!owner)
         {
             SetOwner(agent);
+            haptics?.StartHandshakeForProfile(mode.hapticProfile); // ← 추가
             return;
         }
 
-        // 2) 우선순위 정책 (예: 먼저 잡은 사람 유지)
-        //    만약 "가까운 사람 우선"을 원하면 다음과 같이 교체:
+        // (교체 정책 쓰는 경우에도 세팅 후 아래처럼 호출)
         /*
-        var player = Camera.main ? Camera.main.transform : null;
-        if (player && agent.CurrentGrabbedObject)
-        {
-            float newD = Vector3.Distance(player.position, agent.CurrentGrabbedObject.transform.position);
-            float oldD = owner && owner.CurrentGrabbedObject
-                ? Vector3.Distance(player.position, owner.CurrentGrabbedObject.transform.position)
-                : Mathf.Infinity;
-            if (newD < oldD - 0.1f) SetOwner(agent);
-        }
+        SetOwner(agent);
+        haptics?.StartHandshakeForProfile(mode.hapticProfile);
         */
     }
+
 
     void HandleEnd(HandshakeAgent agent)
     {
@@ -79,13 +72,10 @@ public class HandshakeOrchestrator : MonoBehaviour
     {
         if (owner == agent) return;
 
-        // 기존 오너 정지
         if (owner) haptics?.StopHandshakeNow();
-
         owner = agent;
 
-        // HapticRendering에 “현재 상태는 이벤트 기반(Start/Stop)으로만” 맡김
-        haptics?.BindAgent(owner);
-        haptics?.StartHandshakeOnce(); // 애니메이션과 동시 시작
+        haptics?.BindAgent(owner); // ← 시작은 HandleStart에서 profile로 호출
     }
+
 }

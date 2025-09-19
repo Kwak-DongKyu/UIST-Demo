@@ -1,16 +1,20 @@
 using UnityEngine;
 
+public enum HapticProfile { Weak, Middle, Strong }
+
 [System.Serializable]
 public struct AnimMode
 {
-    [Tooltip("Grabbed GameObject의 Unity Tag")]
     public string tag;
 
-    [Header("Animator Controls")]
-    public string playTrigger;        // 예: "Play_TypeA"
-    public string idleTrigger;        // 예: "Idle"
-    public string idleStateName;      // 예: "Idle"
+    // Animator Controls
+    public string playTrigger;
+    public string idleTrigger;
+    public string idleStateName;
 
-    [Header("Optional Override")]
-    public AnimatorOverrideController overrideController; // 서로 다른 클립 세트 사용시
+    // Optional Override
+    public AnimatorOverrideController overrideController;
+
+    // ★ 추가: 이 애니메이션 모드에서 사용할 햅틱 프로필
+    public HapticProfile hapticProfile;
 }

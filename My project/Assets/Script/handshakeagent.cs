@@ -1,6 +1,7 @@
 using UnityEngine;
 using Oculus.Interaction.HandGrab;
 using System;
+using Oculus.Interaction;
 
 public class HandshakeAgent : MonoBehaviour
 {
@@ -22,6 +23,65 @@ public class HandshakeAgent : MonoBehaviour
 
     private bool wasGrabbing;
 
+    // ★ 추가: 선택된(잡힌) 오브젝트 캐시 + 디버그 토글
+    private GameObject _cachedGrabbedGO;
+
+    [Header("Debug")]
+    public bool debugLogs = false;
+    private string DbgTag => $"[HandshakeAgent:{name}]";
+
+    // (선택) 기본 컨트롤러 복구용
+    [Header("Animator Defaults")]
+    public RuntimeAnimatorController defaultController;
+
+    void Awake()
+    {
+        if (!animator) animator = GetComponentInChildren<Animator>();
+        if (!defaultController && animator) defaultController = animator.runtimeAnimatorController;
+    }
+
+    void OnEnable()
+    {
+        if (interactor != null)
+            interactor.WhenStateChanged += OnInteractorStateChanged;
+    }
+
+    void OnDisable()
+    {
+        if (interactor != null)
+            interactor.WhenStateChanged -= OnInteractorStateChanged;
+    }
+    // ★ 잡기 상태 변화를 이벤트로 캐치해서 선택된 GO를 캐싱
+    private void OnInteractorStateChanged(InteractorStateChangeArgs args)
+    {
+        if (args.NewState == InteractorState.Select)
+        {
+            _cachedGrabbedGO = GetSelectedGameObject();
+            if (debugLogs) Debug.Log($"{DbgTag} SELECT → {_cachedGrabbedGO?.name ?? "null"}");
+        }
+        else if (args.NewState == InteractorState.Hover || args.NewState == InteractorState.Normal)
+        {
+            if (debugLogs && _cachedGrabbedGO) Debug.Log($"{DbgTag} DESELECT → clear {_cachedGrabbedGO.name}");
+            _cachedGrabbedGO = null;
+        }
+    }
+
+    // ★ 현재 선택(잡기)된 Interactable로부터 GameObject 얻기 (여러 버전 대응)
+    private GameObject GetSelectedGameObject()
+    {
+        // 가장 확실: SelectedInteractable을 MonoBehaviour로 캐스팅
+        var selMb = interactor.SelectedInteractable as MonoBehaviour;
+        if (selMb) return selMb.gameObject;
+
+        // 폴백 1: interactor 주변에서 HandGrabInteractable 추적
+        var hgi = interactor.GetComponentInParent<HandGrabInteractable>();
+        if (hgi) return hgi.gameObject;
+
+        // 폴백 2: null
+        return null;
+    }
+
+
     void Reset()
     {
         if (!interactor) interactor = GetComponent<HandGrabInteractor>();
@@ -33,33 +93,56 @@ public class HandshakeAgent : MonoBehaviour
         if (!interactor || !animator) return;
 
         bool now = interactor.IsGrabbing;
+        if (debugLogs) Debug.Log($"{DbgTag} grabNow={now}, was={wasGrabbing}");
 
-        // Grab 시작 엣지
+        // ───── Grab 시작 엣지 ─────
         if (now && !wasGrabbing)
         {
-            // 1) 현재 잡힌 오브젝트 얻기 (Oculus SDK에 따라 달라질 수 있어 아래 헬퍼에서 최대한 안전하게 얻음)
-            CurrentGrabbedObject = TryGetGrabbedObject();
+            // ★ 이벤트 캐시 우선, 없으면 즉시 조회
+            CurrentGrabbedObject = _cachedGrabbedGO ?? GetSelectedGameObject();
+            if (debugLogs) Debug.Log($"{DbgTag} StartEdge: sel={(CurrentGrabbedObject ? CurrentGrabbedObject.name : "null")}");
 
-            // 2) Tag로 AnimMode 선택
+            // ★ 내 소유(GrabOwner) 체크
+            var ownerComp = CurrentGrabbedObject ? CurrentGrabbedObject.GetComponentInParent<GrabOwner>() : null;
+            bool mine = ownerComp && ownerComp.owner == this;
+            if (debugLogs)
+            {
+                var ownerName = ownerComp ? (ownerComp.owner ? ownerComp.owner.name : "nullOwnerField") : "noOwnerComp";
+                Debug.Log($"{DbgTag} OwnerCheck: mine={mine} (ownerComp={ownerName})");
+            }
+
+            if (!mine)
+            {
+                // 내 것이 아니면 트리거/이벤트 발행 금지 (엣지 소모는 해서 중복 방지)
+                wasGrabbing = now;
+                return;
+            }
+
             var mode = ResolveModeByTag(CurrentGrabbedObject ? CurrentGrabbedObject.tag : "");
+            if (debugLogs) Debug.Log($"{DbgTag} ModeResolved: tag='{mode.tag}', play='{mode.playTrigger}' idle='{mode.idleTrigger}'");
 
-            // 3) (선택) AnimatorOverrideController 적용
-            if (mode.overrideController != null)
+            // (선택) AOC Base 체크 후 적용
+            if (mode.overrideController && mode.overrideController.runtimeAnimatorController != null)
+            {
                 animator.runtimeAnimatorController = mode.overrideController;
+                if (debugLogs) Debug.Log($"{DbgTag} AOC applied: {mode.overrideController.name}");
+            }
 
-            // 4) Play 트리거
+            // 트리거 발사
             if (!string.IsNullOrEmpty(mode.playTrigger))
             {
                 animator.ResetTrigger(mode.playTrigger);
                 animator.SetTrigger(mode.playTrigger);
+                if (debugLogs) Debug.Log($"{DbgTag} Animator Trigger → {mode.playTrigger}");
             }
 
             CurrentModeTag = mode.tag;
             HandShake_on = true;
             OnHandshakeStart?.Invoke(this, mode);
+            if (debugLogs) Debug.Log($"{DbgTag} OnHandshakeStart fired");
         }
 
-        // Grab 종료 엣지 → Idle 트리거
+        // ───── Grab 종료 엣지 → Idle ─────
         if (!now && wasGrabbing)
         {
             var mode = ResolveModeByTag(CurrentModeTag);
@@ -67,11 +150,11 @@ public class HandshakeAgent : MonoBehaviour
             {
                 animator.ResetTrigger(mode.idleTrigger);
                 animator.SetTrigger(mode.idleTrigger);
+                if (debugLogs) Debug.Log($"{DbgTag} Animator Trigger → {mode.idleTrigger}");
             }
         }
 
-        // Idle 상태 진입 감지 → HandShake_on false & End 이벤트
-        // (각 모드마다 idle state 이름이 다를 수 있으니 현재 모드의 idleStateName 확인)
+        // ───── Idle 상태 진입 감지 ─────
         var st = animator.GetCurrentAnimatorStateInfo(0);
         var modeForState = ResolveModeByTag(CurrentModeTag);
         bool isIdle = !animator.IsInTransition(0) &&
@@ -79,15 +162,26 @@ public class HandshakeAgent : MonoBehaviour
                       st.IsName(modeForState.idleStateName);
 
         HandShake_on = !isIdle;
+
         if (isIdle && wasGrabbing)
         {
             OnHandshakeEnd?.Invoke(this);
+            if (debugLogs) Debug.Log($"{DbgTag} OnHandshakeEnd fired (idle='{modeForState.idleStateName}')");
+
+            // (선택) 기본 컨트롤러 복구
+            if (defaultController)
+            {
+                animator.runtimeAnimatorController = defaultController;
+                if (debugLogs) Debug.Log($"{DbgTag} Animator controller restored to default");
+            }
+
             CurrentModeTag = "";
             CurrentGrabbedObject = null;
         }
 
         wasGrabbing = now;
     }
+
 
     AnimMode ResolveModeByTag(string tag)
     {

@@ -34,7 +34,7 @@ public class HapticRendering2 : MonoBehaviour
     private Coroutine handshakeCo;
     private bool stopping = false; // X key toggle
 
-    // n명 지원: 현재 햅틱 오너
+    // n명 지원: 현재 햅틱 오너(오케스트레이터에서 세팅)
     private HandshakeAgent boundAgent;
 
     // --- Serial Read Thread ---
@@ -133,8 +133,8 @@ public class HapticRendering2 : MonoBehaviour
             Debug.Log($"Calibration Done. baseLeft={baseEncLeft}, baseRight={baseEncRight}");
         }
 
-        // 디버그: H키 수동 시작
-        if (Input.GetKeyDown(handshakeKey)) StartHandshakeOnce();
+        // 디버그: H키 → 기본 Weak로 시작
+        if (Input.GetKeyDown(handshakeKey)) StartHandshakeWeak();
 
         // 바운드 에이전트가 Idle로 돌아가면 종료
         if (boundAgent && handshakeCo != null && !boundAgent.HandShake_on)
@@ -149,15 +149,22 @@ public class HapticRendering2 : MonoBehaviour
     }
 
     // --- Public API for Orchestrator ---
-    public void BindAgent(HandshakeAgent agent)
-    {
-        boundAgent = agent;
-    }
+    public void BindAgent(HandshakeAgent agent) => boundAgent = agent;
 
-    public void StartHandshakeOnce()
+    // ★ 프로필별 시작 함수
+    public void StartHandshakeWeak() { StartProfileRoutine(HandshakeRoutineWeak()); }
+    public void StartHandshakeMiddle() { StartProfileRoutine(HandshakeRoutineMiddle()); }
+    public void StartHandshakeStrong() { StartProfileRoutine(HandshakeRoutineStrong()); }
+
+    // 프로필 enum으로 시작(오케스트레이터가 호출)
+    public void StartHandshakeForProfile(HapticProfile profile)
     {
-        if (handshakeCo != null) StopCoroutine(handshakeCo);
-        handshakeCo = StartCoroutine(HandshakeRoutine());
+        switch (profile)
+        {
+            case HapticProfile.Middle: StartHandshakeMiddle(); break;
+            case HapticProfile.Strong: StartHandshakeStrong(); break;
+            default: StartHandshakeWeak(); break;
+        }
     }
 
     public void StopHandshakeNow()
@@ -170,24 +177,29 @@ public class HapticRendering2 : MonoBehaviour
         SendStopCommand();
     }
 
-    // --- Handshake motion logic (4s) ---
-    IEnumerator HandshakeRoutine()
+    // 공통 시작 헬퍼
+    private void StartProfileRoutine(IEnumerator routine)
     {
-        float T = handshakeDuration;
-        if (T <= 0f) yield break;
+        if (handshakeCo != null) StopCoroutine(handshakeCo);
+        handshakeCo = StartCoroutine(routine);
+    }
 
+    // --- Handshake motion logic (Weak/Middle/Strong)
+    // 현재는 3개 모두 동일하게 복제. 나중에 네가 내부 수식/파라미터만 변경하면 됨.
+
+    IEnumerator HandshakeRoutineWeak()
+    {
+        float T = handshakeDuration; if (T <= 0f) yield break;
         float t = 0f;
         while (t < T)
         {
             if (stopping) { SendStopCommand(); t += Time.deltaTime; yield return null; continue; }
             if (boundAgent && !boundAgent.HandShake_on) break;
 
-            // y(t) cm
             float y = (t <= 0.5f) ? Mathf.Lerp(0f, 8f, t / 0.5f)
                     : (t <= 3.5f) ? 8f
                     : Mathf.Lerp(8f, 0f, (t - 3.5f) / 0.5f);
 
-            // x(t) cm
             float x = (t <= 1.0f) ? Mathf.Lerp(3f, 4f, t / 1.0f)
                     : (t <= 2.0f) ? Mathf.Lerp(4f, 3f, (t - 1.0f) / 1.0f)
                     : Mathf.Lerp(3f, 5f, (t - 2.0f) / 2.0f);
@@ -206,7 +218,78 @@ public class HapticRendering2 : MonoBehaviour
             t += Time.deltaTime;
             yield return null;
         }
+        SendStopCommand();
+        handshakeCo = null;
+    }
 
+    IEnumerator HandshakeRoutineMiddle()
+    {
+        // 현재 Weak와 동일 복제
+        float T = handshakeDuration; if (T <= 0f) yield break;
+        float t = 0f;
+        while (t < T)
+        {
+            if (stopping) { SendStopCommand(); t += Time.deltaTime; yield return null; continue; }
+            if (boundAgent && !boundAgent.HandShake_on) break;
+
+            float y = (t <= 0.5f) ? Mathf.Lerp(0f, 8f, t / 0.5f)
+                    : (t <= 3.5f) ? 8f
+                    : Mathf.Lerp(8f, 0f, (t - 3.5f) / 0.5f);
+
+            float x = (t <= 1.0f) ? Mathf.Lerp(3f, 4f, t / 1.0f)
+                    : (t <= 2.0f) ? Mathf.Lerp(4f, 3f, (t - 1.0f) / 1.0f)
+                    : Mathf.Lerp(3f, 5f, (t - 2.0f) / 2.0f);
+
+            float fingerTotal = (y <= 0f) ? 0f : (y < 1f ? y : 1f);
+            float ratio = (x <= 3f) ? 0f : (x >= 5f) ? 1f : (x - 3f) / 2f;
+
+            float A_mm = fingerTotal * (1f - ratio) * 5f;
+            float B_mm = fingerTotal * ratio * 5f;
+
+            long A_enc = (long)(A_mm * ENCODER_PER_MM);
+            long B_enc = (long)(B_mm * ENCODER_PER_MM);
+
+            SendCommand('a', A_enc, B_enc);
+
+            t += Time.deltaTime;
+            yield return null;
+        }
+        SendStopCommand();
+        handshakeCo = null;
+    }
+
+    IEnumerator HandshakeRoutineStrong()
+    {
+        // 현재 Weak와 동일 복제
+        float T = handshakeDuration; if (T <= 0f) yield break;
+        float t = 0f;
+        while (t < T)
+        {
+            if (stopping) { SendStopCommand(); t += Time.deltaTime; yield return null; continue; }
+            if (boundAgent && !boundAgent.HandShake_on) break;
+
+            float y = (t <= 0.5f) ? Mathf.Lerp(0f, 8f, t / 0.5f)
+                    : (t <= 3.5f) ? 8f
+                    : Mathf.Lerp(8f, 0f, (t - 3.5f) / 0.5f);
+
+            float x = (t <= 1.0f) ? Mathf.Lerp(3f, 4f, t / 1.0f)
+                    : (t <= 2.0f) ? Mathf.Lerp(4f, 3f, (t - 1.0f) / 1.0f)
+                    : Mathf.Lerp(3f, 5f, (t - 2.0f) / 2.0f);
+
+            float fingerTotal = (y <= 0f) ? 0f : (y < 1f ? y : 1f);
+            float ratio = (x <= 3f) ? 0f : (x >= 5f) ? 1f : (x - 3f) / 2f;
+
+            float A_mm = fingerTotal * (1f - ratio) * 5f;
+            float B_mm = fingerTotal * ratio * 5f;
+
+            long A_enc = (long)(A_mm * ENCODER_PER_MM);
+            long B_enc = (long)(B_mm * ENCODER_PER_MM);
+
+            SendCommand('a', A_enc, B_enc);
+
+            t += Time.deltaTime;
+            yield return null;
+        }
         SendStopCommand();
         handshakeCo = null;
     }
