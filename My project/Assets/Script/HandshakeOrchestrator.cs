@@ -25,6 +25,14 @@ public class HandshakeOrchestrator : MonoBehaviour
     private float cooldownUntil = -1f;
     private Coroutine watchdog;
 
+    // HandshakeOrchestrator 클래스 안에 추가
+    [Header("SFX")]
+    public AudioSource weakSfx;    // 약
+    public AudioSource middleSfx;  // 중
+    public AudioSource strongSfx;  // 강
+
+    private AudioSource currentSfx; // 내부: 지금 재생 중인 소스
+
     void Awake()
     {
         Instance = this;
@@ -86,14 +94,19 @@ public class HandshakeOrchestrator : MonoBehaviour
 
 
     // ★ HandleStart: 이 시점엔 Agent가 HandShake_on=true → 여기서 실제 시작
+    // HandleStart(...) 안에서, haptics 시작 직후 한 줄 추가
     void HandleStart(HandshakeAgent agent, AnimMode mode)
     {
         Debug.Log("handlestart 시작함" + pendingProfile);
         if (owner != agent) return;
+
         haptics?.StartHandshakeForProfile(pendingProfile);
+        PlaySfxForProfile(pendingProfile);   // ★ 추가: 소리 재생
+
         StartWatchdog();
         if (debugLogs) Debug.Log($"[Orch] START haptics for {agent.name} ({pendingProfile})");
     }
+
 
     void HandleEnd(HandshakeAgent agent)
     {
@@ -106,15 +119,16 @@ public class HandshakeOrchestrator : MonoBehaviour
         }
     }
 
+    // ReleaseAfterHaptics() 마지막에 SFX도 정리
     IEnumerator ReleaseAfterHaptics()
     {
-        // 루틴 끝날 때까지 대기 (안전: null 체크)
         while (haptics && haptics.IsRunning)
             yield return null;
 
-        // 이제 해제 + 쿨다운
+        StopCurrentSfx();            // ★ 추가: 소리 정지
         ClearOwnerAndCooldown();
     }
+
 
     void SetOwner(HandshakeAgent agent)
     {
@@ -124,10 +138,12 @@ public class HandshakeOrchestrator : MonoBehaviour
         haptics?.BindAgent(owner);
     }
 
+    // ForceRelease(...) , ClearOwnerAndCooldown()에서도 혹시 몰라 한 번 더 정리
     void ForceRelease(string reason)
     {
         if (debugLogs) Debug.Log($"[Orch] ForceRelease ({reason})");
         haptics?.StopHandshakeNow();
+        StopCurrentSfx();            // ★ 추가
         ClearOwnerAndCooldown();
     }
 
@@ -135,7 +151,40 @@ public class HandshakeOrchestrator : MonoBehaviour
     {
         owner = null;
         cooldownUntil = Time.time + Mathf.Max(0f, cooldownSeconds);
+        StopCurrentSfx();            // ★ 추가
         if (watchdog != null) { StopCoroutine(watchdog); watchdog = null; }
+    }
+
+    // Orchestrator 클래스 안 아무 곳에 추가
+    void PlaySfxForProfile(HapticProfile p)
+    {
+        // 먼저 이전 소리 정지
+        StopCurrentSfx();
+
+        // 프로필 → 소스 매핑
+        AudioSource src = null;
+        switch (p)
+        {
+            case HapticProfile.Strong: src = strongSfx; break;
+            case HapticProfile.Middle: src = middleSfx; break;
+            default: src = weakSfx; break;
+        }
+
+        // 재생
+        if (src)
+        {
+            // 중복 재생 방지
+            src.Stop();
+            src.Play();
+            currentSfx = src;
+        }
+    }
+
+    void StopCurrentSfx()
+    {
+        if (currentSfx && currentSfx.isPlaying)
+            currentSfx.Stop();
+        currentSfx = null;
     }
 
     void StartWatchdog()
