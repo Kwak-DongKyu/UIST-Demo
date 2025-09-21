@@ -96,53 +96,65 @@ public class HandshakeAgent : MonoBehaviour
         if (debugLogs) Debug.Log($"{DbgTag} grabNow={now}, was={wasGrabbing}");
 
         // ───── Grab 시작 엣지 ─────
+        // Grab 시작 엣지
         if (now && !wasGrabbing)
         {
-            // ★ 이벤트 캐시 우선, 없으면 즉시 조회
             CurrentGrabbedObject = _cachedGrabbedGO ?? GetSelectedGameObject();
-            if (debugLogs) Debug.Log($"{DbgTag} StartEdge: sel={(CurrentGrabbedObject ? CurrentGrabbedObject.name : "null")}");
 
-            // ★ 내 소유(GrabOwner) 체크
             var ownerComp = CurrentGrabbedObject ? CurrentGrabbedObject.GetComponentInParent<GrabOwner>() : null;
-            bool mine = ownerComp && ownerComp.owner == this;
-            if (debugLogs)
+            if (!ownerComp || ownerComp.owner != this) { wasGrabbing = now; return; }
+
+            var grabbedTag = CurrentGrabbedObject ? CurrentGrabbedObject.tag : "";
+            if (!TryResolveModeByTag(grabbedTag, out var mode))
             {
-                var ownerName = ownerComp ? (ownerComp.owner ? ownerComp.owner.name : "nullOwnerField") : "noOwnerComp";
-                Debug.Log($"{DbgTag} OwnerCheck: mine={mine} (ownerComp={ownerName})");
+                if (debugLogs) Debug.LogWarning($"{DbgTag} Begin denied: mode not found for tag '{grabbedTag}'");
+                wasGrabbing = now; return;
             }
 
-            if (!mine)
+            // 게이트 (하나는만 실행/쿨다운)
+            bool allowed = HandshakeOrchestrator.Instance && HandshakeOrchestrator.Instance.TryBegin(this, mode);
+            if (!allowed) { wasGrabbing = now; return; }
+
+            // (선택) AOC 적용: Base 없으면 경고하고 적용 스킵
+            if (mode.overrideController)
             {
-                // 내 것이 아니면 트리거/이벤트 발행 금지 (엣지 소모는 해서 중복 방지)
-                wasGrabbing = now;
-                return;
+                if (mode.overrideController.runtimeAnimatorController == null)
+                {
+                    if (debugLogs) Debug.LogWarning($"{DbgTag} OverrideController '{mode.overrideController.name}' has NO Base Controller. Using defaultController.");
+                }
+                else
+                {
+                    animator.runtimeAnimatorController = mode.overrideController;
+                    if (debugLogs) Debug.Log($"{DbgTag} AOC applied: {mode.overrideController.name}");
+                }
             }
 
-            var mode = ResolveModeByTag(CurrentGrabbedObject ? CurrentGrabbedObject.tag : "");
-            if (debugLogs) Debug.Log($"{DbgTag} ModeResolved: tag='{mode.tag}', play='{mode.playTrigger}' idle='{mode.idleTrigger}'");
-
-            // (선택) AOC Base 체크 후 적용
-            if (mode.overrideController && mode.overrideController.runtimeAnimatorController != null)
-            {
-                animator.runtimeAnimatorController = mode.overrideController;
-                if (debugLogs) Debug.Log($"{DbgTag} AOC applied: {mode.overrideController.name}");
-            }
-
-            // 트리거 발사
+            // ★ 트리거 존재 여부 검증 (여기서 가장 많이 낚여요)
             if (!string.IsNullOrEmpty(mode.playTrigger))
             {
+                if (!HasParam(animator, mode.playTrigger, AnimatorControllerParameterType.Trigger))
+                {
+                    Debug.LogWarning($"{DbgTag} Animator has NO Trigger '{mode.playTrigger}'. Check controller/params.");
+                    wasGrabbing = now; return; // 존재 안 하면 재생 안 함
+                }
+
                 animator.ResetTrigger(mode.playTrigger);
                 animator.SetTrigger(mode.playTrigger);
                 if (debugLogs) Debug.Log($"{DbgTag} Animator Trigger → {mode.playTrigger}");
+            }
+            else
+            {
+                Debug.LogWarning($"{DbgTag} mode.playTrigger is empty for tag '{grabbedTag}'");
+                wasGrabbing = now; return;
             }
 
             CurrentModeTag = mode.tag;
             HandShake_on = true;
             OnHandshakeStart?.Invoke(this, mode);
-            if (debugLogs) Debug.Log($"{DbgTag} OnHandshakeStart fired");
         }
 
-        // ───── Grab 종료 엣지 → Idle ─────
+
+        // ───── Grab 종료 엣지 → Idle 트리거만 쏜다 (세션 종료는 아직 아님) ─────
         if (!now && wasGrabbing)
         {
             var mode = ResolveModeByTag(CurrentModeTag);
@@ -152,36 +164,71 @@ public class HandshakeAgent : MonoBehaviour
                 animator.SetTrigger(mode.idleTrigger);
                 if (debugLogs) Debug.Log($"{DbgTag} Animator Trigger → {mode.idleTrigger}");
             }
+            // 여기서는 HandShake_on을 건드리지 않는다. (아직 애니메이션이 Idle로 돌아오지 않았을 수 있음)
         }
 
-        // ───── Idle 상태 진입 감지 ─────
+        // ───── Idle 상태 진입 감지 → ‘잡기 해제된 상태’에서만 세션 종료 ─────
         var st = animator.GetCurrentAnimatorStateInfo(0);
         var modeForState = ResolveModeByTag(CurrentModeTag);
         bool isIdle = !animator.IsInTransition(0) &&
                       !string.IsNullOrEmpty(modeForState.idleStateName) &&
                       st.IsName(modeForState.idleStateName);
 
-        HandShake_on = !isIdle;
-
-        if (isIdle && wasGrabbing)
+        // ★ 종료 조건을 "isIdle && !now" 로 강화 (여전히 잡고 있으면 종료 금지)
+        if (isIdle && !now && !string.IsNullOrEmpty(CurrentModeTag))
         {
-            OnHandshakeEnd?.Invoke(this);
+            HandShake_on = false;                   // ← 이제서야 false
+            OnHandshakeEnd?.Invoke(this);           // ← 이때만 오케스트레이터에 종료 알림
             if (debugLogs) Debug.Log($"{DbgTag} OnHandshakeEnd fired (idle='{modeForState.idleStateName}')");
 
             // (선택) 기본 컨트롤러 복구
             if (defaultController)
-            {
                 animator.runtimeAnimatorController = defaultController;
-                if (debugLogs) Debug.Log($"{DbgTag} Animator controller restored to default");
-            }
 
             CurrentModeTag = "";
             CurrentGrabbedObject = null;
         }
 
+        // ★ HandShake_on은 프레임마다 isIdle로 강제 갱신하지 말고,
+        //   - 시작 엣지에서 true
+        //   - 위 종료 블록에서만 false 로 바꾸세요.
+
+        // 마지막에 상태 갱신
         wasGrabbing = now;
+
     }
 
+    static bool HasParam(Animator anim, string name, AnimatorControllerParameterType type)
+    {
+        if (!anim || string.IsNullOrEmpty(name)) return false;
+        var ps = anim.parameters;
+        for (int i = 0; i < ps.Length; i++)
+            if (ps[i].type == type && ps[i].name == name) return true;
+        return false;
+    }
+
+    bool TryResolveModeByTag(string tag, out AnimMode mode)
+    {
+        mode = default;
+        if (modes == null || modes.Length == 0)
+        {
+            if (debugLogs) Debug.LogWarning($"{DbgTag} modes empty");
+            return false;
+        }
+        if (string.IsNullOrEmpty(tag))
+        {
+            if (debugLogs) Debug.LogWarning($"{DbgTag} grabbed Tag is empty");
+            return false;
+        }
+
+        for (int i = 0; i < modes.Length; i++)
+        {
+            if (modes[i].tag == tag) { mode = modes[i]; return true; }
+        }
+
+        if (debugLogs) Debug.LogWarning($"{DbgTag} NO mode matched for Tag='{tag}'");
+        return false; // ★ 더 이상 0번으로 fallback 안 함
+    }
 
     AnimMode ResolveModeByTag(string tag)
     {

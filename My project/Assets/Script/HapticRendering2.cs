@@ -37,6 +37,16 @@ public class HapticRendering2 : MonoBehaviour
     // n명 지원: 현재 햅틱 오너(오케스트레이터에서 세팅)
     private HandshakeAgent boundAgent;
 
+    // HapticRendering2 클래스 맨 위 아무 곳(헤더 근처)에 추가
+    [Header("Agent Gate")]
+    public bool gateByAgentState = true;   // false면 에이전트 상태 무시(디버그용)
+    public float warmupSecs = 0.25f;       // 시작 직전 HandShake_on==true 기다리는 시간
+    public float gateGraceSecs = 0.40f;    // 시작 후 이 시간 지나서만 조기정지 판단
+    public int idleFramesToStop = 3;     // 연속 false N프레임 시 중단
+
+    [Header("Start Gate")]
+    public bool requireCalibration = true;   // ← true면 Z로 캘리브레이션 완료 전엔 시작 금지
+
     // --- Serial Read Thread ---
     void ReadSerial()
     {
@@ -76,16 +86,31 @@ public class HapticRendering2 : MonoBehaviour
     // --- Commands ---
     private void SendCommand(char cmd, long t1, long t2)
     {
-        if (calibrated && !fromUiOp)
+        Debug.Log(t1 + "," + t2);
+        if (!fromUiOp)
         {
-            t1 += baseEncLeft;
-            t2 += baseEncRight;
+            if (calibrated)
+            {
+                t1 += baseEncLeft;   // 절대 좌표(베이스 오프셋 적용)
+                t2 += baseEncRight;
+            }
+            else
+            {
+                // ★ 캘리브레이션 전: 현재 위치 기준 상대 목표로 보냄
+                lock (this)
+                {
+                    t1 += encoderLeft;
+                    t2 += encoderRight;
+                }
+            }
         }
+
         string msg = $"{cmd},{t1},{t2}\n";
         if (serialPort != null && serialPort.IsOpen)
             serialPort.Write(msg);
         fromUiOp = false;
     }
+
 
     private void SendStopCommand()
     {
@@ -134,11 +159,17 @@ public class HapticRendering2 : MonoBehaviour
         }
 
         // 디버그: H키 → 기본 Weak로 시작
-        if (Input.GetKeyDown(handshakeKey)) StartHandshakeWeak();
+        if (Input.GetKeyDown(handshakeKey))
+        {
+            if (!requireCalibration || calibrated)
+                StartHandshakeWeak();
+            else
+                Debug.LogWarning("[Haptics] Ignored H: not calibrated. Press 'Z' first.");
+        }
 
         // 바운드 에이전트가 Idle로 돌아가면 종료
-        if (boundAgent && handshakeCo != null && !boundAgent.HandShake_on)
-            StopHandshakeNow();
+        //if (boundAgent && handshakeCo != null && !boundAgent.HandShake_on)
+        //    StopHandshakeNow();
     }
 
     private void OnApplicationQuit()
@@ -150,11 +181,12 @@ public class HapticRendering2 : MonoBehaviour
 
     // --- Public API for Orchestrator ---
     public void BindAgent(HandshakeAgent agent) => boundAgent = agent;
-
+    public bool IsRunning => handshakeCo != null;
     // ★ 프로필별 시작 함수
-    public void StartHandshakeWeak() { StartProfileRoutine(HandshakeRoutineWeak()); }
-    public void StartHandshakeMiddle() { StartProfileRoutine(HandshakeRoutineMiddle()); }
-    public void StartHandshakeStrong() { StartProfileRoutine(HandshakeRoutineStrong()); }
+    public void StartHandshakeWeak() { stopping = false; StartProfileRoutine(HandshakeRoutineWeak()); }
+    public void StartHandshakeMiddle() { stopping = false; StartProfileRoutine(HandshakeRoutineMiddle()); }
+    public void StartHandshakeStrong() { stopping = false; StartProfileRoutine(HandshakeRoutineStrong()); }
+
 
     // 프로필 enum으로 시작(오케스트레이터가 호출)
     public void StartHandshakeForProfile(HapticProfile profile)
@@ -175,11 +207,21 @@ public class HapticRendering2 : MonoBehaviour
             handshakeCo = null;
         }
         SendStopCommand();
+        // stopping 플래그는 굳이 true로 유지할 필요 없음. 다음 시작에 방해되니 false로.
+        stopping = false;
     }
 
     // 공통 시작 헬퍼
     private void StartProfileRoutine(IEnumerator routine)
     {
+        // ★ 캘리브레이션 가드
+        if (requireCalibration && !calibrated)
+        {
+            Debug.LogWarning("[Haptics] Calibration required. Press 'Z' to calibrate before starting.");
+            return;
+        }
+
+        stopping = false;
         if (handshakeCo != null) StopCoroutine(handshakeCo);
         handshakeCo = StartCoroutine(routine);
     }
@@ -187,22 +229,34 @@ public class HapticRendering2 : MonoBehaviour
     // --- Handshake motion logic (Weak/Middle/Strong)
     // 현재는 3개 모두 동일하게 복제. 나중에 네가 내부 수식/파라미터만 변경하면 됨.
 
+    // Weak
+    // Weak
     IEnumerator HandshakeRoutineWeak()
     {
+        Debug.Log("weak 햅틱 렌더링 시작함");
+
         float T = handshakeDuration; if (T <= 0f) yield break;
+
+        // (선택) 웜업: ON 될 시간을 잠깐 준다
+        float warm = warmupSecs; // 예: 0.25f
+        while (warm > 0f && boundAgent && !boundAgent.HandShake_on)
+        {
+            warm -= Time.deltaTime;
+            yield return null;
+        }
+
         float t = 0f;
         while (t < T)
         {
             if (stopping) { SendStopCommand(); t += Time.deltaTime; yield return null; continue; }
-            if (boundAgent && !boundAgent.HandShake_on) break;
 
-            float y = (t <= 0.5f) ? Mathf.Lerp(0f, 8f, t / 0.5f)
-                    : (t <= 3.5f) ? 8f
-                    : Mathf.Lerp(8f, 0f, (t - 3.5f) / 0.5f);
+            // y(t)
+            float y = (t <= 0.5f) ? Mathf.Lerp(0f, 4f, t / 0.5f)
+                    : (t <= 3.5f) ? 4f
+                    : Mathf.Lerp(4f, 0f, (t - 3.5f) / 0.5f);
 
-            float x = (t <= 1.0f) ? Mathf.Lerp(3f, 4f, t / 1.0f)
-                    : (t <= 2.0f) ? Mathf.Lerp(4f, 3f, (t - 1.0f) / 1.0f)
-                    : Mathf.Lerp(3f, 5f, (t - 2.0f) / 2.0f);
+            // x(t): 0~1s 3→4, 이후 4
+            float x = (t <= 1f) ? Mathf.Lerp(3f, 4f, t / 1f) : 4f;
 
             float fingerTotal = (y <= 0f) ? 0f : (y < 1f ? y : 1f);
             float ratio = (x <= 3f) ? 0f : (x >= 5f ? 1f : (x - 3f) / 2f);
@@ -222,23 +276,37 @@ public class HapticRendering2 : MonoBehaviour
         handshakeCo = null;
     }
 
+
+
+    // Middle
+    // Middle
     IEnumerator HandshakeRoutineMiddle()
     {
-        // 현재 Weak와 동일 복제
+        Debug.Log("middle 햅틱 렌더링 시작함");
+
         float T = handshakeDuration; if (T <= 0f) yield break;
+
+        float warm = warmupSecs;
+        while (warm > 0f && boundAgent && !boundAgent.HandShake_on)
+        {
+            warm -= Time.deltaTime;
+            yield return null;
+        }
+
         float t = 0f;
         while (t < T)
         {
             if (stopping) { SendStopCommand(); t += Time.deltaTime; yield return null; continue; }
-            if (boundAgent && !boundAgent.HandShake_on) break;
 
-            float y = (t <= 0.5f) ? Mathf.Lerp(0f, 8f, t / 0.5f)
-                    : (t <= 3.5f) ? 8f
-                    : Mathf.Lerp(8f, 0f, (t - 3.5f) / 0.5f);
+            // y(t)
+            float y = (t <= 0.5f) ? Mathf.Lerp(0f, 6f, t / 0.5f)
+                    : (t <= 3.5f) ? 6f
+                    : Mathf.Lerp(6f, 0f, (t - 3.5f) / 0.5f);
 
-            float x = (t <= 1.0f) ? Mathf.Lerp(3f, 4f, t / 1.0f)
-                    : (t <= 2.0f) ? Mathf.Lerp(4f, 3f, (t - 1.0f) / 1.0f)
-                    : Mathf.Lerp(3f, 5f, (t - 2.0f) / 2.0f);
+            // x(t): 0~1s 3→5, 1~2s 5→4, 이후 4
+            float x = (t <= 1f) ? Mathf.Lerp(3f, 5f, t / 1f)
+                   : (t <= 2f) ? Mathf.Lerp(5f, 4f, (t - 1f) / 1f)
+                   : 4f;
 
             float fingerTotal = (y <= 0f) ? 0f : (y < 1f ? y : 1f);
             float ratio = (x <= 3f) ? 0f : (x >= 5f) ? 1f : (x - 3f) / 2f;
@@ -258,23 +326,38 @@ public class HapticRendering2 : MonoBehaviour
         handshakeCo = null;
     }
 
+
+
+    // Strong
+    // Strong
     IEnumerator HandshakeRoutineStrong()
     {
-        // 현재 Weak와 동일 복제
+        Debug.Log("strong 햅틱 렌더링 시작함");
+
         float T = handshakeDuration; if (T <= 0f) yield break;
+
+        float warm = warmupSecs;
+        while (warm > 0f && boundAgent && !boundAgent.HandShake_on)
+        {
+            warm -= Time.deltaTime;
+            yield return null;
+        }
+
         float t = 0f;
         while (t < T)
         {
             if (stopping) { SendStopCommand(); t += Time.deltaTime; yield return null; continue; }
-            if (boundAgent && !boundAgent.HandShake_on) break;
 
+            // y(t)
             float y = (t <= 0.5f) ? Mathf.Lerp(0f, 8f, t / 0.5f)
                     : (t <= 3.5f) ? 8f
                     : Mathf.Lerp(8f, 0f, (t - 3.5f) / 0.5f);
 
-            float x = (t <= 1.0f) ? Mathf.Lerp(3f, 4f, t / 1.0f)
-                    : (t <= 2.0f) ? Mathf.Lerp(4f, 3f, (t - 1.0f) / 1.0f)
-                    : Mathf.Lerp(3f, 5f, (t - 2.0f) / 2.0f);
+            // x(t): 0~1s 3→5, 1~2s 5→3, 2~2.5s 3→4, 이후 4
+            float x = (t <= 1f) ? Mathf.Lerp(3f, 5f, t / 1f)
+                   : (t <= 2f) ? Mathf.Lerp(5f, 3f, (t - 1f) / 1f)
+                   : (t <= 2.5f) ? Mathf.Lerp(3f, 4f, (t - 2f) / 0.5f)
+                   : 4f;
 
             float fingerTotal = (y <= 0f) ? 0f : (y < 1f ? y : 1f);
             float ratio = (x <= 3f) ? 0f : (x >= 5f) ? 1f : (x - 3f) / 2f;
@@ -293,4 +376,6 @@ public class HapticRendering2 : MonoBehaviour
         SendStopCommand();
         handshakeCo = null;
     }
+
+
 }

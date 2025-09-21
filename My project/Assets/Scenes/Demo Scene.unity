@@ -1323,7 +1323,7 @@ Transform:
   m_GameObject: {fileID: 414801771}
   serializedVersion: 2
   m_LocalRotation: {x: -0.000000011175886, y: -0, z: -9.094946e-13, w: 1}
-  m_LocalPosition: {x: -0.0000018309804, y: 1.1775004, z: -0.016514959}
+  m_LocalPosition: {x: -0, y: 1.1775004, z: -0.016514959}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -1896,6 +1896,10 @@ MonoBehaviour:
   headPivot: {fileID: 417841107}
   headTarget: {fileID: 414801772}
   playerHead: {fileID: 1080969798}
+  headConstraint: {fileID: 554460628}
+  followConstraintWeight: 1
+  idleConstraintWeight: 0
+  constraintWeightLerp: 12
   onlyDuringHandshake: 1
   handshakeAgent: {fileID: 417841122}
   rotationOffsetEuler: {x: 0, y: 0, z: 0}
@@ -1904,6 +1908,8 @@ MonoBehaviour:
   maxPitch: 40
   recaptureBaseOnStart: 1
   recaptureBaseOnFollowOn: 1
+  resetTargetRotationOnEnd: 1
+  clearBaseOnEnd: 1
   debugLogs: 0
   debugGizmos: 1
 --- !u!114 &417841120
@@ -1933,7 +1939,7 @@ MonoBehaviour:
   handshakeAgent: {fileID: 417841122}
   autoCalibrateOnToggle: 1
   wristFixEuler: {x: 0, y: 0, z: 0}
-  positionOffset: {x: 0, y: 0, z: 0}
+  positionOffset: {x: 0, y: 0, z: -0.15}
   eulerRotationOffset: {x: 0, y: 0, z: 0}
   useLocalOffsetAxes: 0
   followPosLerp: 1
@@ -2857,7 +2863,7 @@ MonoBehaviour:
   handshakeAgent: {fileID: 454838771}
   autoCalibrateOnToggle: 1
   wristFixEuler: {x: 0, y: 0, z: 0}
-  positionOffset: {x: 0, y: 0, z: 0}
+  positionOffset: {x: -0.1, y: 0, z: 0}
   eulerRotationOffset: {x: 0, y: 0, z: 0}
   useLocalOffsetAxes: 0
   followPosLerp: 1
@@ -2910,6 +2916,10 @@ MonoBehaviour:
   headPivot: {fileID: 454838739}
   headTarget: {fileID: 1066958680}
   playerHead: {fileID: 1080969798}
+  headConstraint: {fileID: 1848164441}
+  followConstraintWeight: 1
+  idleConstraintWeight: 0
+  constraintWeightLerp: 12
   onlyDuringHandshake: 1
   handshakeAgent: {fileID: 454838771}
   rotationOffsetEuler: {x: 0, y: 0, z: 0}
@@ -2918,6 +2928,8 @@ MonoBehaviour:
   maxPitch: 40
   recaptureBaseOnStart: 1
   recaptureBaseOnFollowOn: 1
+  resetTargetRotationOnEnd: 1
+  clearBaseOnEnd: 1
   debugLogs: 0
   debugGizmos: 1
 --- !u!4 &457254447 stripped
@@ -3522,7 +3534,7 @@ MonoBehaviour:
   handshakeAgent: {fileID: 525236594}
   autoCalibrateOnToggle: 1
   wristFixEuler: {x: 0, y: 0, z: 0}
-  positionOffset: {x: 0, y: 0, z: 0}
+  positionOffset: {x: 0, y: 0, z: 0.1}
   eulerRotationOffset: {x: 0, y: 0, z: 0}
   useLocalOffsetAxes: 0
   followPosLerp: 1
@@ -3598,14 +3610,20 @@ MonoBehaviour:
   headPivot: {fileID: 1619336920}
   headTarget: {fileID: 517210801}
   playerHead: {fileID: 1080969798}
+  headConstraint: {fileID: 1623551389}
+  followConstraintWeight: 1
+  idleConstraintWeight: 0
+  constraintWeightLerp: 12
   onlyDuringHandshake: 1
   handshakeAgent: {fileID: 525236594}
-  rotationOffsetEuler: {x: 0, y: 0, z: 0}
+  rotationOffsetEuler: {x: 57, y: 0, z: 0}
   rotateSpeed: 12
   maxYaw: 70
   maxPitch: 40
   recaptureBaseOnStart: 1
   recaptureBaseOnFollowOn: 1
+  resetTargetRotationOnEnd: 1
+  clearBaseOnEnd: 1
   debugLogs: 0
   debugGizmos: 1
 --- !u!1 &535409632
@@ -4349,6 +4367,11 @@ MonoBehaviour:
   ENCODER_PER_MM: 90.8
   handshakeDuration: 4
   handshakeKey: 104
+  gateByAgentState: 1
+  warmupSecs: 0.25
+  gateGraceSecs: 0.4
+  idleFramesToStop: 3
+  requireCalibration: 1
 --- !u!114 &705227439
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -4366,6 +4389,8 @@ MonoBehaviour:
   - {fileID: 417841122}
   - {fileID: 454838771}
   haptics: {fileID: 705227438}
+  cooldownSeconds: 1
+  debugLogs: 0
 --- !u!1 &705507993
 GameObject:
   m_ObjectHideFlags: 0
@@ -4673,8 +4698,8 @@ SphereCollider:
   m_ProvidesContacts: 0
   m_Enabled: 1
   serializedVersion: 3
-  m_Radius: 0.18
-  m_Center: {x: 0, y: 0, z: 0}
+  m_Radius: 0.09
+  m_Center: {x: -0.1, y: 0, z: 0}
 --- !u!54 &744449022
 Rigidbody:
   m_ObjectHideFlags: 0
@@ -5184,8 +5209,8 @@ SphereCollider:
   m_ProvidesContacts: 0
   m_Enabled: 1
   serializedVersion: 3
-  m_Radius: 0.22
-  m_Center: {x: 0, y: 0, z: 0}
+  m_Radius: 0.1
+  m_Center: {x: -0.06, y: 0, z: -0.09}
 --- !u!54 &838339174
 Rigidbody:
   m_ObjectHideFlags: 0
@@ -6229,8 +6254,8 @@ SphereCollider:
   m_ProvidesContacts: 0
   m_Enabled: 1
   serializedVersion: 3
-  m_Radius: 0.45
-  m_Center: {x: 0, y: 0, z: 0}
+  m_Radius: 0.3
+  m_Center: {x: 0, y: 0, z: -0.09}
 --- !u!54 &1116848248
 Rigidbody:
   m_ObjectHideFlags: 0
@@ -8382,7 +8407,7 @@ Transform:
   m_GameObject: {fileID: 1760283615}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalPosition: {x: 0, y: 0.006, z: 0}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
