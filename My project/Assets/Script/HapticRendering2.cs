@@ -46,6 +46,11 @@ public class HapticRendering2 : MonoBehaviour
 
     [Header("Start Gate")]
     public bool requireCalibration = true;   // ← true면 Z로 캘리브레이션 완료 전엔 시작 금지
+                                             // HapticRendering2 클래스 맨 위에 추가
+    [Header("Manual Profiles (Keyboard)")]
+    public KeyCode weakKey = KeyCode.Alpha1;  // 1키: 약
+    public KeyCode middleKey = KeyCode.Alpha2;  // 2키: 중
+    public KeyCode strongKey = KeyCode.Alpha3;  // 3키: 강
 
     // --- Serial Read Thread ---
     void ReadSerial()
@@ -150,6 +155,8 @@ public class HapticRendering2 : MonoBehaviour
         // 정지 토글
         if (Input.GetKeyDown(KeyCode.X)) { stopping = !stopping; SendStopCommand(); }
 
+        if (Input.GetKeyDown(KeyCode.I)) { if(calibrated) SendCommand('a', 0, 0); }
+
         // 캘리브레이션
         if (Input.GetKeyDown(KeyCode.Z))
         {
@@ -170,6 +177,36 @@ public class HapticRendering2 : MonoBehaviour
         // 바운드 에이전트가 Idle로 돌아가면 종료
         //if (boundAgent && handshakeCo != null && !boundAgent.HandShake_on)
         //    StopHandshakeNow();
+        // 수동 프로필 재생 (1/2/3)
+        if (Input.GetKeyDown(weakKey))
+        {
+            if (!requireCalibration || calibrated)
+            {
+                Debug.Log("[Haptics] Manual: WEAK (1)");
+                StartHandshakeWeak();
+            }
+            else Debug.LogWarning("[Haptics] Not calibrated. Press 'Z' first.");
+        }
+
+        if (Input.GetKeyDown(middleKey))
+        {
+            if (!requireCalibration || calibrated)
+            {
+                Debug.Log("[Haptics] Manual: MIDDLE (2)");
+                StartHandshakeMiddle();
+            }
+            else Debug.LogWarning("[Haptics] Not calibrated. Press 'Z' first.");
+        }
+
+        if (Input.GetKeyDown(strongKey))
+        {
+            if (!requireCalibration || calibrated)
+            {
+                Debug.Log("[Haptics] Manual: STRONG (3)");
+                StartHandshakeStrong();
+            }
+            else Debug.LogWarning("[Haptics] Not calibrated. Press 'Z' first.");
+        }
     }
 
     private void OnApplicationQuit()
@@ -273,6 +310,7 @@ public class HapticRendering2 : MonoBehaviour
             yield return null;
         }
         SendStopCommand();
+        yield return StartCoroutine(ReturnToBaseAndStop());
         handshakeCo = null;
     }
 
@@ -282,7 +320,7 @@ public class HapticRendering2 : MonoBehaviour
     // Middle
     IEnumerator HandshakeRoutineMiddle()
     {
-        Debug.Log("middle 햅틱 렌더링 시작함");
+        Debug.Log("현재 middle 햅틱 렌더링 시작함");
 
         float T = handshakeDuration; if (T <= 0f) yield break;
 
@@ -323,6 +361,7 @@ public class HapticRendering2 : MonoBehaviour
             yield return null;
         }
         SendStopCommand();
+        yield return StartCoroutine(ReturnToBaseAndStop());
         handshakeCo = null;
     }
 
@@ -374,7 +413,40 @@ public class HapticRendering2 : MonoBehaviour
             yield return null;
         }
         SendStopCommand();
+        yield return StartCoroutine(ReturnToBaseAndStop());
         handshakeCo = null;
+    }
+    // HapticRendering2 안에 추가
+    private IEnumerator ReturnToBaseAndStop(float settleSeconds = 0.12f)
+    {
+        // 베이스로 복귀
+        if (calibrated)
+        {
+            // 베이스(0,0)로: SendCommand에서 baseEnc를 더하므로 베이스 절대 위치로 감
+            SendCommand('a', 0, 0);
+        }
+        else
+        {
+            // 캘리브레이션 전이라면 현재 위치에서 베이스까지 상대 이동
+            long dL, dR;
+            lock (this)
+            {
+                dL = baseEncLeft - encoderLeft;
+                dR = baseEncRight - encoderRight;
+            }
+            SendCommand('a', dL, dR);
+        }
+
+        // 약간의 정착 시간
+        float t = 0f;
+        while (t < settleSeconds)
+        {
+            t += Time.deltaTime;
+            yield return null;
+        }
+
+        // 모터 정지 신호
+        SendStopCommand();
     }
 
 

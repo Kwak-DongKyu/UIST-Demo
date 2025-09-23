@@ -35,6 +35,11 @@ public class HandshakeOrchestrator : MonoBehaviour
 
     void Awake()
     {
+        if (Instance && Instance != this)
+        {
+            Destroy(gameObject);
+            return;
+        }
         Instance = this;
 
         if (agents == null || agents.Count == 0)
@@ -42,12 +47,13 @@ public class HandshakeOrchestrator : MonoBehaviour
 
         foreach (var a in agents)
         {
-            a.OnHandshakeStart += HandleStart; // 이제는 거의 no-op (로그용)
+            a.OnHandshakeStart += HandleStart;
             a.OnHandshakeEnd += HandleEnd;
         }
 
         if (!haptics) haptics = FindObjectOfType<HapticRendering2>(true);
     }
+
 
     void OnDestroy()
     {
@@ -88,36 +94,125 @@ public class HandshakeOrchestrator : MonoBehaviour
         // 3) 여기서만 오너 지정 + 프로필 기억 (햅틱은 아직 시작하지 않음)
         SetOwner(agent);
         pendingProfile = mode.hapticProfile;
-        if (debugLogs) Debug.Log($"[Orch] ALLOW {agent.name}, profile={pendingProfile}");
+        if (debugLogs) Debug.Log($"현재 [Orch] ALLOW {agent.name}, profile={pendingProfile}");
         return true;
     }
 
 
     // ★ HandleStart: 이 시점엔 Agent가 HandShake_on=true → 여기서 실제 시작
-    // HandleStart(...) 안에서, haptics 시작 직후 한 줄 추가
+    // 도우미: 자식에서 찾아 enable 토글
+    T EnableInChildren<T>(HandshakeAgent agent, bool on) where T : Behaviour
+    {
+        var c = agent ? agent.GetComponentInChildren<T>(true) : null;
+        if (c) c.enabled = on;
+        return c;
+    }
+
+    // HandshakeOrchestrator.HandleStart(...)
+    // HandshakeOrchestrator.cs (기존 HandleStart에 보강)
     void HandleStart(HandshakeAgent agent, AnimMode mode)
     {
-        Debug.Log("handlestart 시작함" + pendingProfile);
         if (owner != agent) return;
 
+        // 0) Head follow(있으면) 에이전트 연결 + 세션 동안 활성화
+        var head = agent.GetComponentInChildren<HeadTargetDriver>(true);
+        if (head)
+        {
+            head.handshakeAgent = agent;
+            head.onlyDuringHandshake = true;
+            head.enabled = true; // 게이팅이 알아서 weight를 올림
+        }
+
+        // 1) LatchIK2: 즉시 캘리브레이트하여 한 프레임도 안 늦게 추종
+        var latch = agent.GetComponent<HandLatchIK2>();
+        if (latch)
+        {
+            latch.handshakeAgent = agent; // 바인딩 보강
+            latch.enabled = true;
+            latch.BeginFollowNow(doCalibrate: true);
+        }
+
+        // 2) Retargeter ON
+        var retarget = agent.GetComponent<HandRetargeter>();
+        if (retarget) retarget.EnableAndMaybeCalibrate(doCalib: true);
+
+        // 3) (안전) Animator 트리거 재발사
+        if (!string.IsNullOrEmpty(mode.playTrigger))
+        {
+            var anim = agent.animator;
+            if (anim && HasParam(anim, mode.playTrigger, AnimatorControllerParameterType.Trigger))
+            {
+                anim.ResetTrigger(mode.playTrigger);
+                anim.SetTrigger(mode.playTrigger);
+            }
+        }
+
+        // 4) 햅틱 시작
+        haptics?.BindAgent(owner);
         haptics?.StartHandshakeForProfile(pendingProfile);
-        PlaySfxForProfile(pendingProfile);   // ★ 추가: 소리 재생
+
+        PlaySfxForProfile(pendingProfile);
+
 
         StartWatchdog();
-        if (debugLogs) Debug.Log($"[Orch] START haptics for {agent.name} ({pendingProfile})");
+        if (debugLogs) Debug.Log($"[Orch] START: latch/retarget/head/haptics all armed. profile={pendingProfile}");
     }
 
 
+    IEnumerator PlaySfxAfterHapticsTick(HapticProfile p)
+    {
+        yield return null; // 한 프레임 대기
+        if (haptics && haptics.IsRunning)
+            PlaySfxForProfile(p);
+    }
+
+
+
+    // HandshakeOrchestrator.cs
     void HandleEnd(HandshakeAgent agent)
     {
-        if (owner == agent)
+        if (owner != agent) return;
+
+        // 1) 햅틱 즉시 정지 + SFX 정지 (애니메이션과 동시 종료)
+        if (haptics && haptics.IsRunning) haptics.StopHandshakeNow();
+        StopCurrentSfx();
+
+        // 2) Latch는 아이들로 스냅하고 끈다
+        var latch = agent.GetComponent<HandLatchIK2>();
+        if (latch)
         {
-            // ❌ 기존: 즉시 haptics.StopHandshakeNow();
-            // ✅ 변경: 햅틱이 스스로 끝날 때까지 대기 후 해제/쿨다운
-            if (debugLogs) Debug.Log($"[Orch] HandleEnd from owner {agent.name} → wait haptics to finish");
-            StartCoroutine(ReleaseAfterHaptics());
+            latch.EndFollowAndSnap(); // 내부에서 Snap + following false
+            latch.enabled = false;
         }
+
+        // 3) Retargeter OFF
+        //var retarget = agent.GetComponent<HandRetargeter>();
+        //if (retarget) retarget.SessionBegin(doCalib: true);
+        var retarget = agent.GetComponent<HandRetargeter>();
+        if (retarget) retarget.SessionEndReset();
+
+
+
+        // (선택) HeadTargetDriver는 게이팅으로 알아서 해제되지만,
+        // 명시적으로 agent를 비우고 싶다면 여기서 처리할 수도 있음.
+
+        // 4) 소유권/쿨다운 처리(워치독도 정리)
+        ClearOwnerAndCooldown();
+
+        if (debugLogs) Debug.Log("[Orch] END: all features stopped together (animation-ended).");
     }
+
+
+    static bool HasParam(Animator anim, string name, AnimatorControllerParameterType type)
+{
+    if (!anim) return false;
+    foreach (var p in anim.parameters)
+        if (p.type == type && p.name == name) return true;
+    return false;
+}
+
+
+
 
     // ReleaseAfterHaptics() 마지막에 SFX도 정리
     IEnumerator ReleaseAfterHaptics()
@@ -139,11 +234,28 @@ public class HandshakeOrchestrator : MonoBehaviour
     }
 
     // ForceRelease(...) , ClearOwnerAndCooldown()에서도 혹시 몰라 한 번 더 정리
+    // HandshakeOrchestrator.cs
     void ForceRelease(string reason)
     {
         if (debugLogs) Debug.Log($"[Orch] ForceRelease ({reason})");
+
+        // 햅틱/SFX 즉시 정지
         haptics?.StopHandshakeNow();
-        StopCurrentSfx();            // ★ 추가
+        StopCurrentSfx();
+
+        // 현재 오너 클린다운 (Latch/Retargeter OFF + 스냅)
+        if (owner)
+        {
+            var latch = owner.GetComponent<HandLatchIK2>();
+            if (latch)
+            {
+                latch.EndFollowAndSnap();
+                latch.enabled = false;
+            }
+            var retarget = owner.GetComponent<HandRetargeter>();
+            if (retarget) retarget.enabled = false;
+        }
+
         ClearOwnerAndCooldown();
     }
 
@@ -158,6 +270,7 @@ public class HandshakeOrchestrator : MonoBehaviour
     // Orchestrator 클래스 안 아무 곳에 추가
     void PlaySfxForProfile(HapticProfile p)
     {
+        Debug.Log("현재 소리 재생 중"+ p);
         // 먼저 이전 소리 정지
         StopCurrentSfx();
 

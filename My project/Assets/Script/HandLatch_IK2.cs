@@ -14,24 +14,15 @@ public class HandLatchIK2 : MonoBehaviour
     public Transform rightInitialRef;  // 오른손 아이들 포즈 기준
 
     [Header("Initial Offsets (apply while idle)")]
-    [Tooltip("초기(아이들) 포즈에 적용할 오프셋을 Ref의 로컬축 기준으로 쓸지 여부")]
     public bool useLocalInitialOffsetAxes = true;
-
-    [Tooltip("왼손 초기 위치 오프셋")]
     public Vector3 leftInitialPosOffset = Vector3.zero;
-    [Tooltip("왼손 초기 회전 오프셋(도)")]
     public Vector3 leftInitialEulerOffset = Vector3.zero;
-
-    [Tooltip("오른손 초기 위치 오프셋")]
     public Vector3 rightInitialPosOffset = Vector3.zero;
-    [Tooltip("오른손 초기 회전 오프셋(도)")]
     public Vector3 rightInitialEulerOffset = Vector3.zero;
 
     [Header("Right-hand Follow")]
-    public Transform playerRightPalm;   // 플레이어 오른손 palm
-    //public HandshakeManager handshake;  // handshake.HandShake_on
-    public HandshakeAgent handshakeAgent;  // handshake.HandShake_on
-
+    public Transform playerRightPalm;          // 플레이어 오른손 palm
+    public HandshakeAgent handshakeAgent;      // 악수 상태를 알려주는 Agent
 
     [Header("Offsets (RIGHT follow only)")]
     public bool autoCalibrateOnToggle = true;  // ON 순간 회전 오프셋 캡처
@@ -51,27 +42,43 @@ public class HandLatchIK2 : MonoBehaviour
 
     void Start()
     {
-        // 왼손/오른손 타깃을 "초기 Ref + 초기 오프셋"으로 세팅
         SnapLeftIdle();
         SnapRightIdle();
 
-        // 항상 IK=1 (아이들일 때는 타깃이 initialRef+offset을 가리키므로 그 자세가 유지됨)
         if (leftArmIK) leftArmIK.weight = 1f;
         if (rightArmIK) rightArmIK.weight = 1f;
 
         following = false;
         prevHandshakeOn = false;
     }
+    void OnEnable()
+    {
+        // 켜졌을 때 이미 세션 중이면 바로 따라붙도록
+        if (handshakeAgent && handshakeAgent.HandShake_on)
+        {
+            prevHandshakeOn = false; // ON edge를 만들거나
+            following = true;        // 즉시 활성화
+        }
+        
+    }
+
+    // 오케스트레이터에서 종료 직전 호출해 아이들 포즈로 스냅
+    public void ForceIdleSnap()
+    {
+        SnapLeftIdle();
+        SnapRightIdle();
+    }
+
 
     void Update()
     {
         if (!handshakeAgent) return;
-        bool wantFollow = handshakeAgent.HandShake_on;
-        
-        //if (!handshake) return;
-        //bool wantFollow = handshake.HandShake_on; // 오른손만 추종
 
-        // ON edge
+        bool wantFollow = handshakeAgent.HandShake_on;
+        if (wantFollow) Debug.Log("dddd latch 실행 중임"+ handshakeAgent.name);
+        //else Debug.Log("dddd latch 실행 안하는 중");
+
+        // ─────────────── ON edge (Handshake 시작) ───────────────
         if (wantFollow && !prevHandshakeOn)
         {
             if (autoCalibrateOnToggle && playerRightPalm && rightIKTarget
@@ -87,26 +94,22 @@ public class HandLatchIK2 : MonoBehaviour
 
             following = true; // LateUpdate부터 플레이어 손 추종
         }
-        // OFF edge
+        // ─────────────── OFF edge (Handshake 종료) ───────────────
         else if (!wantFollow && prevHandshakeOn)
         {
-            // 아이들(초기)로 복귀: 오른손 타깃을 다시 initialRef+offset으로
             SnapRightIdle();
             following = false;
         }
 
         prevHandshakeOn = wantFollow;
 
-        // 왼손은 항상 아이들 포즈 유지(혹시 외부에서 값이 바뀌었을 경우 대비)
+        // 왼손은 항상 아이들 포즈 유지
         if (!following)
             SnapLeftIdle();
-            //SnapRightIdle();
-
     }
 
     void LateUpdate()
     {
-        // 오른손 추종 중일 때만 플레이어 손 기준으로 타깃 업데이트
         if (!following) return;
         if (!playerRightPalm || !rightIKTarget) return;
 
@@ -136,7 +139,7 @@ public class HandLatchIK2 : MonoBehaviour
 
         if (!IsFinite(targetPos) || !IsFinite(targetRot)) return;
 
-        // 스무딩
+        // 스무딩 적용
         rightIKTarget.position = (followPosLerp < 1f)
             ? Vector3.Lerp(rightIKTarget.position, targetPos, followPosLerp)
             : targetPos;
@@ -154,7 +157,6 @@ public class HandLatchIK2 : MonoBehaviour
         Vector3 pos = leftInitialRef.position;
         Quaternion rot = leftInitialRef.rotation;
 
-        // 초기 오프셋 적용
         if (useLocalInitialOffsetAxes)
         {
             pos += leftInitialRef.TransformVector(leftInitialPosOffset);
@@ -179,7 +181,6 @@ public class HandLatchIK2 : MonoBehaviour
         Vector3 pos = rightInitialRef.position;
         Quaternion rot = rightInitialRef.rotation;
 
-        // 초기 오프셋 적용
         if (useLocalInitialOffsetAxes)
         {
             pos += rightInitialRef.TransformVector(rightInitialPosOffset);
@@ -196,18 +197,43 @@ public class HandLatchIK2 : MonoBehaviour
         rightIKTarget.position = pos;
         rightIKTarget.rotation = rot;
     }
+    // HandLatchIK2 내부 아무 곳
+
+    public void BeginFollowNow(bool doCalibrate = true)
+    {
+        if (doCalibrate && autoCalibrateOnToggle && playerRightPalm && rightIKTarget
+            && IsFinite(playerRightPalm.rotation) && IsFinite(rightIKTarget.rotation))
+        {
+            latchedRotOffset = Quaternion.Inverse(playerRightPalm.rotation) * rightIKTarget.rotation;
+            if (!IsFinite(latchedRotOffset)) latchedRotOffset = Quaternion.identity;
+        }
+        else
+        {
+            latchedRotOffset = Quaternion.identity;
+        }
+        following = true;
+        prevHandshakeOn = true; // 핸드쉐이크 이벤트 없이 직접 시작할 때도 바로 따라가게
+    }
+
+    public void EndFollowAndSnap()
+    {
+        following = false;
+        prevHandshakeOn = false;
+        SnapRightIdle();
+        SnapLeftIdle();
+    }
+
+    public void SnapBothIdle() { SnapLeftIdle(); SnapRightIdle(); }
 
     // ---------- Utilities ----------
-    static bool IsFinite(Vector3 v)
-    {
-        return !(float.IsNaN(v.x) || float.IsNaN(v.y) || float.IsNaN(v.z) ||
-                 float.IsInfinity(v.x) || float.IsInfinity(v.y) || float.IsInfinity(v.z));
-    }
-    static bool IsFinite(Quaternion q)
-    {
-        return !(float.IsNaN(q.x) || float.IsNaN(q.y) || float.IsNaN(q.z) || float.IsNaN(q.w) ||
-                 float.IsInfinity(q.x) || float.IsInfinity(q.y) || float.IsInfinity(q.z) || float.IsInfinity(q.w));
-    }
+    static bool IsFinite(Vector3 v) =>
+        !(float.IsNaN(v.x) || float.IsNaN(v.y) || float.IsNaN(v.z) ||
+          float.IsInfinity(v.x) || float.IsInfinity(v.y) || float.IsInfinity(v.z));
+
+    static bool IsFinite(Quaternion q) =>
+        !(float.IsNaN(q.x) || float.IsNaN(q.y) || float.IsNaN(q.z) || float.IsNaN(q.w) ||
+          float.IsInfinity(q.x) || float.IsInfinity(q.y) || float.IsInfinity(q.z) || float.IsInfinity(q.w));
+
     static Vector3 SafeEuler(Vector3 e)
     {
         e.x = Mathf.Repeat(e.x + 360f, 720f) - 360f;

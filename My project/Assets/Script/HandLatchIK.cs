@@ -60,45 +60,103 @@ public class HandLatchIK : MonoBehaviour
         following = false;
         prevHandshakeOn = false;
     }
+    public HandshakeAgent agent; // Inspector에서 연결
 
+    void OnEnable()
+    {
+        if (agent != null)
+        {
+            agent.OnHandshakeStart += HandleStart;
+            agent.OnHandshakeEnd += HandleEnd;
+        }
+    }
+
+    void OnDisable()
+    {
+        if (agent != null)
+        {
+            agent.OnHandshakeStart -= HandleStart;
+            agent.OnHandshakeEnd -= HandleEnd;
+        }
+    }
+
+    void HandleStart(HandshakeAgent a, AnimMode mode)
+    {
+        if (a != agent) return;
+        CalibrateOffset();
+        following = true;
+    }
+
+    void HandleEnd(HandshakeAgent a)
+    {
+        if (a != agent) return;
+        SnapRightIdle();
+        following = false;
+    }
+
+    // 기존 Update()에서는 handshake.HandShake_on 체크 제거
     void Update()
     {
-        if (!handshake) return;
-
-        bool wantFollow = handshake.HandShake_on; // 오른손만 추종
-
-        // ON edge
-        if (wantFollow && !prevHandshakeOn)
-        {
-            if (autoCalibrateOnToggle && playerRightPalm && rightIKTarget
-                && IsFinite(playerRightPalm.rotation) && IsFinite(rightIKTarget.rotation))
-            {
-                latchedRotOffset = Quaternion.Inverse(playerRightPalm.rotation) * rightIKTarget.rotation;
-                if (!IsFinite(latchedRotOffset)) latchedRotOffset = Quaternion.identity;
-            }
-            else
-            {
-                latchedRotOffset = Quaternion.identity;
-            }
-
-            following = true; // LateUpdate부터 플레이어 손 추종
-        }
-        // OFF edge
-        else if (!wantFollow && prevHandshakeOn)
-        {
-            // 아이들(초기)로 복귀: 오른손 타깃을 다시 initialRef+offset으로
-            SnapRightIdle();
-            following = false;
-        }
-
-        prevHandshakeOn = wantFollow;
-
-        // 왼손은 항상 아이들 포즈 유지(혹시 외부에서 값이 바뀌었을 경우 대비)
         if (!following)
+        {
             SnapLeftIdle();
-            //SnapRightIdle();
-
+        }
     }
+    private void CalibrateOffset()
+    {
+        Debug.Log("현재 Latch 실행2");
+
+        if (autoCalibrateOnToggle && playerRightPalm && rightIKTarget
+            && IsFinite(playerRightPalm.rotation) && IsFinite(rightIKTarget.rotation))
+        {
+            latchedRotOffset = Quaternion.Inverse(playerRightPalm.rotation) * rightIKTarget.rotation;
+            if (!IsFinite(latchedRotOffset)) latchedRotOffset = Quaternion.identity;
+        }
+        else
+        {
+            latchedRotOffset = Quaternion.identity;
+        }
+    }
+
+
+    //void Update()
+    //{
+    //    if (!handshake) return;
+
+    //    bool wantFollow = handshake.HandShake_on; // 오른손만 추종
+
+    //    // ON edge
+    //    if (wantFollow && !prevHandshakeOn)
+    //    {
+    //        if (autoCalibrateOnToggle && playerRightPalm && rightIKTarget
+    //            && IsFinite(playerRightPalm.rotation) && IsFinite(rightIKTarget.rotation))
+    //        {
+    //            latchedRotOffset = Quaternion.Inverse(playerRightPalm.rotation) * rightIKTarget.rotation;
+    //            if (!IsFinite(latchedRotOffset)) latchedRotOffset = Quaternion.identity;
+    //        }
+    //        else
+    //        {
+    //            latchedRotOffset = Quaternion.identity;
+    //        }
+
+    //        following = true; // LateUpdate부터 플레이어 손 추종
+    //    }
+    //    // OFF edge
+    //    else if (!wantFollow && prevHandshakeOn)
+    //    {
+    //        // 아이들(초기)로 복귀: 오른손 타깃을 다시 initialRef+offset으로
+    //        SnapRightIdle();
+    //        following = false;
+    //    }
+
+    //    prevHandshakeOn = wantFollow;
+
+    //    // 왼손은 항상 아이들 포즈 유지(혹시 외부에서 값이 바뀌었을 경우 대비)
+    //    if (!following)
+    //        SnapLeftIdle();
+    //        //SnapRightIdle();
+
+    //}
 
     void LateUpdate()
     {

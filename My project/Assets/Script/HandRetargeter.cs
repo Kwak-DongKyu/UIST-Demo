@@ -1,10 +1,14 @@
-﻿// HandRetarget_RotationOnly_AutoCalib.cs
-// - Mixamo wrist(=mixamorig:RightHand): 절대 변경하지 않음 (기준 고정)
-// - XR wrist 기준 상대 "회전"만 Mixamo 본에 적용 (포지션 X)
-// - 시작 시/핫키(C)로 자동 캘리브레이션: 각 관절의 오프셋을 계산해 초기 꺾임 제거
+﻿using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 
+/// <summary>
+/// HandRetargeter (Rotation-only, auto-calib, safe restore)
+/// - Mixamo wrist(=mixamorig:RightHand)는 '기준'으로 고정 (위치/회전 변경 X)
+/// - XR wrist를 기준으로 한 "상대 회전"만 각 Mixamo 손가락 본에 적용
+/// - SessionBegin에서 캘리브레이션 + 초기 localRotation 스냅샷 저장
+/// - SessionEndReset에서 Animator 프레임을 넘겨가며 2회 복구 후 비활성화
+/// </summary>
 public class HandRetargeter : MonoBehaviour
 {
     [Header("Wrist (기준 프레임)")]
@@ -30,16 +34,18 @@ public class HandRetargeter : MonoBehaviour
     Quaternion SpaceRotOffset => Quaternion.Euler(spaceEulerOffset);
 
     [Header("탐색/동작 옵션")]
-    public int maxDepthPerFinger = 4;   // Prox/Inter/Dist/(Tip) 최대 4
-    public bool autoCalibrateOnStart = true;
-    public KeyCode recalibrateKey = KeyCode.C;
+    [Range(1, 5)] public int maxDepthPerFinger = 4; // Prox/Inter/Dist/(Tip)
+    public bool autoCalibrateOnStart = false;       // Orchestrator가 세션단위로 관리하므로 기본 off
+    public KeyCode recalibrateKey = KeyCode.C;      // 수동 테스팅용
 
-    // XR wrist → Mixamo wrist 회전 매핑(공통)
-    Quaternion _wristOffset;
+    // ───────── 내부 상태 ─────────
+    Quaternion _wristOffset; // XR wrist → Mixamo wrist 공통 회전 매핑
+    readonly Dictionary<Transform, Quaternion> _boneOffset = new(); // 본별 오프셋(초기 꺾임 제거)
+    readonly Dictionary<Transform, Quaternion> _initialLocalRot = new(); // 세션 시작시 snapshot
+    readonly List<Transform> _allMixBones = new(); // 복구 대상 전체 Mixamo 본 목록
+    bool _sessionActive = false; // 세션 중일 때만 LateUpdate에서 회전 적용
 
-    // 본별 오프셋(초기 꺾임 제거): Mixamo wrist-로컬 공간에서 정의
-    readonly Dictionary<Transform, Quaternion> _boneOffset = new();
-
+    // ───────── Unity lifecycle ─────────
     void Start()
     {
         if (!xrWrist || !mixamoWrist)
@@ -48,23 +54,23 @@ public class HandRetargeter : MonoBehaviour
             enabled = false;
             return;
         }
-
-        // Mixamo wrist는 '기준'으로 고정.
-        // XR wrist의 축을 Mixamo wrist 축으로 보정하는 공통 오프셋
+        // 공통 손목 오프셋(월드 회전 기준)
         _wristOffset = Quaternion.Inverse(xrWrist.rotation * SpaceRotOffset) * mixamoWrist.rotation;
 
-        if (autoCalibrateOnStart) CalibrateNow();
+        if (autoCalibrateOnStart) CalibrateNow(); // 디버그용
     }
 
     void Update()
     {
+        // 디버그용 재캘리브레이트
         if (Input.GetKeyDown(recalibrateKey))
             CalibrateNow();
     }
 
     void LateUpdate()
     {
-        // 손가락 체인별로 회전만 적용
+        if (!_sessionActive) return;
+
         RetargetFinger(xrIndexRoot, mixIndexRoot, xrHasMetacarpal_Index);
         RetargetFinger(xrMiddleRoot, mixMiddleRoot, xrHasMetacarpal_Middle);
         RetargetFinger(xrRingRoot, mixRingRoot, xrHasMetacarpal_Ring);
@@ -72,7 +78,41 @@ public class HandRetargeter : MonoBehaviour
         RetargetFinger(xrThumbRoot, mixThumbRoot, xrHasMetacarpal_Thumb);
     }
 
-    // ===== 캘리브레이션 =====
+    // ───────── 외부 제어(오케스트레이터에서 호출) ─────────
+    public void SessionBegin(bool doCalib = true)
+    {
+        enabled = true;              // 컴포넌트 활성
+        if (doCalib) CalibrateNow(); // 손가락 꺾임 오프셋 계산
+        SnapshotInitialPose();       // 시작 당시 localRotation 저장
+        _sessionActive = true;       // 이제부터 LateUpdate에서 회전 적용
+    }
+
+    public void SessionEndReset()
+    {
+        // Animator와 경합 방지를 위해 프레임 경계에서 순차 복구
+        StartCoroutine(GracefulRestoreAndDisable());
+    }
+
+    IEnumerator GracefulRestoreAndDisable()
+    {
+        // 1) 덮어쓰기 중단 (여전히 enabled=true 유지)
+        _sessionActive = false;
+
+        // 2) 현재 프레임의 Animator 업데이트가 끝나도록 대기
+        yield return new WaitForEndOfFrame();
+
+        // 3) 강제 복구 1회
+        ApplySnapshotPoseOnce();
+
+        // 4) 다음 프레임에도 혹시 상쇄될 수 있어 한 번 더 적용
+        yield return null;
+        ApplySnapshotPoseOnce();
+
+        // 5) 이제 안전하게 끈다
+        enabled = false;
+    }
+
+    // ───────── 캘리브레이션 ─────────
     public void CalibrateNow()
     {
         _boneOffset.Clear();
@@ -83,7 +123,6 @@ public class HandRetargeter : MonoBehaviour
         CalibFinger(xrPinkyRoot, mixPinkyRoot, xrHasMetacarpal_Pinky);
         CalibFinger(xrThumbRoot, mixThumbRoot, xrHasMetacarpal_Thumb);
 
-        // 팁: C키로 재캘리브레이트할 때는 손을 "편안한 기본 자세(오픈 핸드)"로 유지하세요.
         Debug.Log("[Retarget] Calibration complete.");
     }
 
@@ -93,7 +132,7 @@ public class HandRetargeter : MonoBehaviour
 
         var xrChain = CollectChain(xrRoot, maxDepthPerFinger);
         var mxChain = CollectChain(mixRoot, maxDepthPerFinger);
-        if (xrHasMetacarpal && xrChain.Count > 1) xrChain.RemoveAt(0);
+        if (xrHasMetacarpal && xrChain.Count > 1) xrChain.RemoveAt(0); // XR의 metacarpal 스킵
 
         int n = Mathf.Min(xrChain.Count, mxChain.Count);
         for (int i = 0; i < n; i++)
@@ -101,22 +140,22 @@ public class HandRetargeter : MonoBehaviour
             var xr = xrChain[i];
             var mx = mxChain[i];
 
-            // XR wrist 기준 상대 회전(현재 포즈)
+            // 현재 프레임의 상대 회전 계산 (월드 기준)
             Quaternion xrRel0 = Quaternion.Inverse(xrWrist.rotation) * xr.rotation;
 
-            // Mixamo wrist 기준 상대 회전(현재 포즈)
-            Quaternion mxWorld0 = (mx.parent != null) ? mx.parent.rotation * mx.localRotation : mx.localRotation;
+            Quaternion mxWorld0 = (mx.parent != null)
+                ? mx.parent.rotation * mx.localRotation
+                : mx.localRotation;
             Quaternion mxRel0 = Quaternion.Inverse(mixamoWrist.rotation) * mxWorld0;
 
             // 목표: mxRel ≈ boneOffset * (_wristOffset * xrRel)
             // => boneOffset = mxRel0 * inverse(_wristOffset * xrRel0)
             Quaternion boneOffset = mxRel0 * Quaternion.Inverse(_wristOffset * xrRel0);
-
             _boneOffset[mx] = boneOffset;
         }
     }
 
-    // ===== 적용 =====
+    // ───────── 적용 ─────────
     void RetargetFinger(Transform xrRoot, Transform mixRoot, bool xrHasMetacarpal)
     {
         if (!xrRoot || !mixRoot) return;
@@ -128,9 +167,7 @@ public class HandRetargeter : MonoBehaviour
         int n = Mathf.Min(xrChain.Count, mxChain.Count);
         for (int i = 0; i < n; i++)
         {
-            var xr = xrChain[i];
-            var mx = mxChain[i];
-            ApplyRotation(xr, mx);
+            ApplyRotation(xrChain[i], mxChain[i]);
         }
     }
 
@@ -150,7 +187,45 @@ public class HandRetargeter : MonoBehaviour
             : mxRel;
     }
 
-    // ===== 체인 탐색 유틸 =====
+    // ───────── 스냅샷 & 복구 ─────────
+    public void SnapshotInitialPose()
+    {
+        CollectAllMixBones();
+        _initialLocalRot.Clear();
+        foreach (var t in _allMixBones)
+        {
+            if (!t) continue;
+            _initialLocalRot[t] = t.localRotation;
+        }
+    }
+
+    void ApplySnapshotPoseOnce()
+    {
+        foreach (var kv in _initialLocalRot)
+        {
+            var t = kv.Key;
+            if (!t) continue;
+            t.localRotation = kv.Value;
+        }
+    }
+
+    void CollectAllMixBones()
+    {
+        _allMixBones.Clear();
+        void add(Transform root)
+        {
+            if (!root) return;
+            var chain = CollectChain(root, maxDepthPerFinger);
+            foreach (var t in chain) if (t) _allMixBones.Add(t);
+        }
+        add(mixIndexRoot);
+        add(mixMiddleRoot);
+        add(mixRingRoot);
+        add(mixPinkyRoot);
+        add(mixThumbRoot);
+    }
+
+    // ───────── 체인 탐색 ─────────
     List<Transform> CollectChain(Transform root, int maxDepth)
     {
         var list = new List<Transform>(maxDepth);
@@ -165,20 +240,32 @@ public class HandRetargeter : MonoBehaviour
 
     Transform GetPrimaryChild(Transform parent)
     {
-        if (parent.childCount == 0) return null;
-        if (parent.childCount == 1) return parent.GetChild(0);
+        if (!parent) return null;
+        int childCount = parent.childCount;
+        if (childCount == 0) return null;
+        if (childCount == 1) return parent.GetChild(0);
 
         // 이름 힌트로 주 체인 선택
         string[] prefer = { "Thumb", "Index", "Middle", "Ring", "Pinky", "Little",
                             "Prox", "Inter", "Dist", "Tip", "1", "2", "3", "4" };
         foreach (var key in prefer)
         {
-            for (int i = 0; i < parent.childCount; i++)
+            for (int i = 0; i < childCount; i++)
             {
                 var c = parent.GetChild(i);
                 if (c.name.Contains(key)) return c;
             }
         }
         return parent.GetChild(0);
+    }
+
+    // ───────── 호환용(기존 API 유지) ─────────
+    public void EnableAndMaybeCalibrate(bool doCalib = true)
+    {
+        SessionBegin(doCalib);
+    }
+    public void DisableNow()
+    {
+        SessionEndReset();
     }
 }
